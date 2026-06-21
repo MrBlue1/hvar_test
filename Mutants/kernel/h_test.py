@@ -1,658 +1,440 @@
 import numpy as np
-import warnings
 import importlib.util
-import sys
-from pathlib import Path
-from typing import Dict, List, Tuple, Any
+from sklearn.cluster import KMeans
 from collections import defaultdict
+from Mutants.experiment_1 import plot_coverage,plot_cm_both
+from Mutants.experiment_rq2 import compute_rq2_metrics,plot_fingerprint_tsne,extract_case_studies,plot_cases
+from Mutants.experiment_rq3 import run_rq3_experiment
+from Mutants.experiment_rq4 import run_rq4_experiment_a,run_rq4_experiment_b
+from Mutants.mutant_ananlysis import run_optimized_analysis,detect_fingerprint_collisions2, run_violation_statistc,analyze_single_operator,print_operator_summary,conditional_diversity_test,resolution_gain_test
+import warnings
+import pickle
 
-# 忽略数值警告
-warnings.filterwarnings("ignore")
-np.seterr(all="ignore")
+np.seterr(invalid='ignore')  # 对inf-nan计算不再报警
+# 方案2: 仅忽略RuntimeWarning（更精细）
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="numpy")
+# ==========================
+# rbf_kernel 输出可能的分类
+# ==========================
+all_behavior_types=['invalid_output','negative_values', 'uniform_centrality', 'exceeds_one', 'near_identical', 'nan', 'symmetry_violation', 'singular', 'negative_row_sum', 'non_psd', 'similarity_inversion', 'trace_violation', 'low_rank', 'inf', 'exception', 'homogeneous_offdiag', 'excessive_sparsity', 'expanded_norm', 'diagonal_not_one', 'eigenvalue_failure', 'contracted_norm','never_happen']
 
-# =====================================================
-# 1. 约束层定义（6个核心约束）
-# =====================================================
 
-class RBFConstraints:
-    """RBF核的数学约束检查器"""
-    
-    @staticmethod
-    def check_type(K: Any) -> Tuple[bool, float]:
-        """检查类型是否为ndarray"""
-        is_valid = isinstance(K, np.ndarray)
-        return not is_valid, 0.0 if is_valid else 1.0
-    
-    @staticmethod
-    def check_shape(K: np.ndarray, expected_shape: Tuple) -> Tuple[bool, float]:
-        """检查形状是否匹配"""
-        if not isinstance(K, np.ndarray):
-            return True, 1.0
-        is_valid = K.shape == expected_shape
-        return not is_valid, 0.0 if is_valid else 1.0
-    
-    @staticmethod
-    def check_numerical_stability(K: np.ndarray) -> Tuple[bool, float]:
-        """检查NaN/Inf"""
-        if not isinstance(K, np.ndarray):
-            return True, 1.0
-        has_inf = np.any(np.isinf(K))
-        has_nan = np.any(np.isnan(K))
-        is_violated = has_inf or has_nan
-        # 严重程度：只要有一个就最严重
-        severity = 1.0 if is_violated else 0.0
-        return is_violated, severity
-    
-    @staticmethod
-    def check_symmetry(K: np.ndarray, is_self_similar: bool) -> Tuple[bool, float]:
-        """
-        检查对称性
-        is_self_similar: True表示X is Y（应该对称）
-        """
-        if not isinstance(K, np.ndarray) or K.ndim != 2:
-            return True, 1.0
+# ==========================
+# 测试用例生成（LHS增强版）
+# ==========================
+def generate_lhs_tests(n_samples=200):
+    tests = []
+    for _ in range(n_samples):
+        # 增加负值模式以检测符号敏感变异体（如abs替换）
+        dim_type = np.random.choice(['1D', '2D', 'EXTREME', 'NEGATIVE'], p=[0.35, 0.35, 0.2, 0.1])
         
-        if not is_self_similar:
-            # 如果不是自相似，不要求严格对称
-            return False, 0.0
+        if dim_type == '1D':
+            size = np.random.randint(2, 10)
+            X = np.random.randn(size)  # 标准正态分布（含负值）
+        elif dim_type == '2D':
+            rows, cols = np.random.randint(2, 10, size=2)
+            X = np.random.randn(rows, cols)
+        elif dim_type == 'NEGATIVE':  # 专门生成强负值
+            rows, cols = np.random.randint(2, 6, size=2)
+            X = -np.random.rand(rows, cols) * 10  # [-10, 0)
+        else:  # EXTREME
+            mode = np.random.choice(['large', 'small', 'zero', 'inf', 'nan'])
+            shape = (np.random.randint(2, 5), np.random.randint(2, 5))
+            if mode == 'large':
+                X = np.random.randn(*shape) * 1e200  # 保持符号的极端大数
+            elif mode == 'small':
+                X = np.random.randn(*shape) * 1e-200
+            elif mode == 'zero':
+                X = np.zeros(shape)
+            elif mode == 'inf':
+                X = np.full(shape, np.inf)
+                X[np.random.randint(shape[0]), np.random.randint(shape[1])] = np.random.randn()
+            else:  # nan
+                X = np.random.randn(*shape)
+                X[np.random.randint(shape[0]), np.random.randint(shape[1])] = np.nan
         
-        diff = np.abs(K - K.T)
-        max_diff = np.max(diff)
-        is_violated = max_diff > 1e-7
-        
-        # 严重程度归一化（假设最大合理差异为1.0）
-        severity = min(max_diff, 1.0)
-        return is_violated, severity
-    
-    @staticmethod
-    def check_diag_unity(K: np.ndarray, is_self_similar: bool) -> Tuple[bool, float]:
-        """修复版：严格区分 X=Y 和 X≠Y"""
-        if not isinstance(K, np.ndarray) or K.ndim != 2:
-            return True, 1.0
-        
-        if not is_self_similar:
-            # X≠Y 时，对角线不需要为 1，直接返回"未违反"
-            return False, 0.0
-        
-        # X=Y 时，严格检查对角线为 1
-        diag = np.diag(K)
-        deviation = np.abs(diag - 1.0)
-        max_dev = np.max(deviation)
-        is_violated = max_dev > 1e-5
-        
-        return is_violated, min(max_dev, 1.0)
-    
-    @staticmethod
-    def check_range(K: np.ndarray) -> Tuple[bool, float]:
-        """检查值域[0,1]"""
-        if not isinstance(K, np.ndarray):
-            return True, 1.0
-        
-        min_val = np.min(K)
-        max_val = np.max(K)
-        
-        # 负值程度（超过容忍度-1e-10）
-        neg_violation = abs(min_val) if min_val < -1e-10 else 0.0
-        
-        # 超上限程度
-        upper_violation = max_val - 1.0 if max_val > 1.0 else 0.0
-        
-        is_violated = (min_val < -1e-10) or (max_val > 1.0)
-        severity = max(neg_violation, upper_violation)
-        
-        return is_violated, severity
-    
-    @classmethod
-    def check_all(cls, K: Any, expected_shape: Tuple, is_self_similar: bool) -> Dict:
-        """执行所有约束检查"""
-        results = {}
-        
-        # 1. 类型检查
-        violated, sev = cls.check_type(K)
-        results['type'] = {
-            'violated': violated,
-            'severity': sev,
-            'label': '类型异常' if violated else '正常'
-        }
-        
-        if violated:
-            # 类型错误，后续检查无意义
-            return results
-        
-        # 2. 形状检查
-        violated, sev = cls.check_shape(K, expected_shape)
-        results['shape'] = {
-            'violated': violated,
-            'severity': sev,
-            'label': '形状异常' if violated else '正常'
-        }
-        
-        if violated:
-            return results
-        
-        # 3. 数值稳定性
-        violated, sev = cls.check_numerical_stability(K)
-        results['stability'] = {
-            'violated': violated,
-            'severity': sev,
-            'label': '数值溢出' if violated else '正常'
-        }
-        
-        if violated:
-            return results
-        
-        # 4. 对称性（仅自相似时严格）
-        violated, sev = cls.check_symmetry(K, is_self_similar)
-        results['symmetry'] = {
-            'violated': violated,
-            'severity': sev,
-            'label': '非对称输出' if violated else '正常'
-        }
-        
-        # 5. 对角线（仅自相似时检查）
-        violated, sev = cls.check_diag_unity(K, is_self_similar)
-        results['diag'] = {
-            'violated': violated,
-            'severity': sev,
-            'label': '对角线偏离' if violated else '正常'
-        }
-        
-        # 6. 值域
-        violated, sev = cls.check_range(K)
-        results['range'] = {
-            'violated': violated,
-            'severity': sev,
-            'label': '值域异常' if violated else '正常'
-        }
-        
-        return results
-
-# =====================================================
-# 2. 分层判定引擎
-# =====================================================
-
-class HierarchicalOracle:
-    """
-    三层判定引擎：
-    Layer 1: 数值容差（严格1e-9 vs 宽松1e-4）
-    Layer 2: 约束违反记录
-    Layer 3: 约束类型集合 + 量级相似度
-    """
-    
-    def __init__(self):
-        self.tolerance_strict = 1e-6
-        self.tolerance_loose = 1e-2
-        self.magnitude_bins = [1e-10, 1e-8, 1e-6, 1e-4, 1e-2, 1.0]  # 数量级分桶
-    
-    def get_magnitude_level(self, severity: float) -> int:
-        """获取量级等级（用于Layer 3比较）"""
-        if severity <= 0:
-            return -1  # 无违反
-        for i, threshold in enumerate(self.magnitude_bins):
-            if severity <= threshold:
-                return i
-        return len(self.magnitude_bins)
-    
-    def judge(self, original_output: Any, mutant_output: Any, 
-              expected_shape: Tuple, is_self_similar: bool) -> Dict:
-        """
-        执行三层判定
-        返回: {
-            'is_kill': bool,
-            'is_equiv': bool,  # 是否等效（伪杀死）
-            'layer': int,      # 在哪一层判定
-            'reason': str,
-            'details': dict
-        }
-        """
-        # Layer 1: 数值容差初筛
-        layer1_result = self._layer1_numerical(original_output, mutant_output)
-        
-        if layer1_result['strict_equiv']:
-            # 严格等效
-            return {
-                'is_kill': False,
-                'is_equiv': True,
-                'layer': 1,
-                'reason': '严格数值等效（<1e-9）',
-                'details': layer1_result
-            }
-        
-        if layer1_result['significant_diff']:
-            # 显著差异，直接杀死
-            return {
-                'is_kill': True,
-                'is_equiv': False,
-                'layer': 1,
-                'reason': f'显著数值差异（>{self.tolerance_loose}）',
-                'details': layer1_result
-            }
-        
-        # Layer 2: 约束违反检查（进入模糊区）
-        orig_constraints = RBFConstraints.check_all(
-            original_output, expected_shape, is_self_similar
-        )
-        mut_constraints = RBFConstraints.check_all(
-            mutant_output, expected_shape, is_self_similar
-        )
-        
-        # 提取违反的约束类型
-        orig_violations = {k for k, v in orig_constraints.items() if v['violated']}
-        mut_violations = {k for k, v in mut_constraints.items() if v['violated']}
-        
-        layer2_result = {
-            'orig_violations': orig_violations,
-            'mut_violations': mut_violations,
-            'orig_details': orig_constraints,
-            'mut_details': mut_constraints
-        }
-        
-        # 检查Critical约束（类型、形状、稳定性）
-        critical = {'type', 'shape', 'stability'}
-        orig_critical = orig_violations & critical
-        mut_critical = mut_violations & critical
-        
-        # 如果原始通过而变异体失败，直接杀死
-        if not orig_critical and mut_critical:
-            return {
-                'is_kill': True,
-                'is_equiv': False,
-                'layer': 2,
-                'reason': f'变异体违反关键约束: {mut_critical}',
-                'details': layer2_result
-            }
-        
-        # Layer 3: 约束模式相似度（两者都违反或都通过）
-        layer3_result = self._layer3_pattern_similarity(
-            orig_violations, mut_violations,
-            orig_constraints, mut_constraints
-        )
-        
-        if layer3_result['is_equiv']:
-            return {
-                'is_kill': False,
-                'is_equiv': True,
-                'layer': 3,
-                'reason': layer3_result['reason'],
-                'details': {
-                    'layer1': layer1_result,
-                    'layer2': layer2_result,
-                    'layer3': layer3_result
-                }
-            }
+        # Y生成：匹配X的分布特性，增加符号冲突概率
+        if np.random.rand() < 0.7:
+            if dim_type in ['EXTREME', 'NEGATIVE']:
+                Y = X.copy() if np.random.rand() < 0.3 else None
+            else:
+                # 随机决定Y是否与X同分布（增加负值组合）
+                Y = np.random.randn(*X.shape) if np.random.rand() < 0.5 else None
         else:
-            return {
-                'is_kill': True,
-                'is_equiv': False,
-                'layer': 3,
-                'reason': layer3_result['reason'],
-                'details': {
-                    'layer1': layer1_result,
-                    'layer2': layer2_result,
-                    'layer3': layer3_result
-                }
-            }
-    
-    def _layer1_numerical(self, orig: Any, mut: Any) -> Dict:
-        """Layer 1: 数值容差检查"""
-        result = {
-            'strict_equiv': False,
-            'significant_diff': False,
-            'max_diff': float('inf')
-        }
-        
-        # 类型检查
-        if type(orig) != type(mut):
-            result['significant_diff'] = True
-            return result
-        
-        if not isinstance(orig, np.ndarray):
-            # 都不是数组，直接比较
-            result['max_diff'] = abs(orig - mut) if isinstance(orig, (int, float)) else 1.0
-            result['strict_equiv'] = result['max_diff'] < self.tolerance_strict
-            result['significant_diff'] = result['max_diff'] > self.tolerance_loose
-            return result
-        
-        # 都是数组
-        if orig.shape != mut.shape:
-            result['significant_diff'] = True
-            return result
-        
-        # 计算差异
-        diff = np.abs(orig - mut)
-        result['max_diff'] = np.max(diff)
-        
-        result['strict_equiv'] = result['max_diff'] < self.tolerance_strict
-        result['significant_diff'] = result['max_diff'] > self.tolerance_loose
-        
-        return result
-    
-    def _layer3_pattern_similarity(self, orig_vio: set, mut_vio: set,
-                                   orig_det: Dict, mut_det: Dict) -> Dict:
-        """Layer 3: 约束模式相似度"""
-        
-        # 规则1: 约束类型集合完全相同
-        if orig_vio != mut_vio:
-            return {
-                'is_equiv': False,
-                'reason': f'约束类型不同: 原始{orig_vio} vs 变异{mut_vio}'
-            }
-        
-        # 如果没有违反任何约束（都通过），但在Layer 1是模糊区（数值微差）
-        if not orig_vio:
-            return {
-                'is_equiv': True,
-                'reason': '都满足所有约束，数值微差视为等效'
-            }
-        
-        # 规则2: 最大偏离量级在同一数量级（10倍以内）
-        max_orig_sev = max((orig_det[k]['severity'] for k in orig_vio), default=0.0)
-        max_mut_sev = max((mut_det[k]['severity'] for k in mut_vio), default=0.0)
-        
-        # 获取量级等级
-        orig_level = self.get_magnitude_level(max_orig_sev)
-        mut_level = self.get_magnitude_level(max_mut_sev)
-        
-        # 检查是否在同一桶或相邻桶（允许1级误差）
-        if abs(orig_level - mut_level) <= 1:
-            return {
-                'is_equiv': True,
-                'reason': f'约束类型相同({orig_vio})，量级相近(原始:{max_orig_sev:.2e}, 变异:{max_mut_sev:.2e})'
-            }
-        else:
-            return {
-                'is_equiv': False,
-                'reason': f'量级差异过大: 原始{max_orig_sev:.2e}(level{orig_level}) vs 变异{max_mut_sev:.2e}(level{mut_level})'
-            }
+            Y = None
+            
+        tests.append((X, Y))
+    return tests
 
-# =====================================================
-# 3. 测试用例生成（LHS采样）
-# =====================================================
-
-def generate_test_cases(n: int = 50, seed: int = 42) -> List[Tuple]:
-    """生成LHS测试用例"""
-    np.random.seed(seed)
-    test_cases = []
-    n_samples, n_features = 8, 4
-    
-    for i in range(n):
-        # LHS采样
-        X = np.zeros((n_samples, n_features))
-        Y = np.zeros((n_samples, n_features))
-        
-        for f in range(n_features):
-            centers = np.linspace(-5, 5, max(2, n_samples // 2))
-            X[:, f] = np.random.choice(centers, n_samples) + np.random.uniform(-0.5, 0.5, n_samples)
-            Y[:, f] = np.random.choice(centers, n_samples) + np.random.uniform(-0.5, 0.5, n_samples)
-        
-        gamma = 10 ** np.random.uniform(-3, 3)
-        eps = 10 ** np.random.uniform(-12, -4)
-        
-        # 混合测试类型
-        det = i % 10
-        if det < 3:
-            test_cases.append((X, None, gamma, eps, True))  # X=Y, 自相似
-        elif det < 8:
-            test_cases.append((X, X.copy(), gamma, eps, True))  # X=Y (显式)
-        else:
-            test_cases.append((X, Y, gamma, eps, False))  # X!=Y
-    
-    # 边界测试
-    boundary_cases = [
-        (np.zeros((4, 4)), None, 1.0, 1e-8, True),  # 全零
-        (np.ones((4, 4)), None, 1.0, 1e-8, True),   # 全一
-        (np.random.randn(4, 4) * 1e5, None, 1e-3, 1e-8, True),  # 大数值
-    ]
-    
-    # 插入边界用例
-    indices = np.linspace(0, n-1, len(boundary_cases), dtype=int)
-    for idx, case in zip(indices, boundary_cases):
-        test_cases[idx] = case
-    
-    K_orig = np.array([[1.0, 0.5], [0.5, 1.0]])
-    K_mut = np.array([[1.0, 0.500001], [0.500002, 1.0]])  # 轻微不对称
-
-    return test_cases
-
-# =====================================================
-# 4. 变异体加载与执行
-# =====================================================
-
-def load_kernel_func(py_file: Path):
-    """动态加载rbf_kernel函数"""
-    name = py_file.stem
-    if name in sys.modules:
-        del sys.modules[name]
-    
-    spec = importlib.util.spec_from_file_location(name, py_file)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
+# ==========================
+# 载入 Oracle & Mutants
+# ==========================
+def load_oracle():
+    try:
+        spec = importlib.util.spec_from_file_location('M00', 'M00.py')
+        mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-    
-    return mod.rbf_kernel
+        return mod.rbf_kernel
+    except Exception as e:
+        print(f"[WARN] Failed to load Oracle: {e}")
+        return None
 
-def run_experiment(mutants_dir: Path, n_tests: int = 50):
-    """修复版：正确追踪Layer 2/3触发"""
-    print("="*60)
-    print("RBF核变异体分层判定实验（修复版）")
-    print("="*60)
-    
-    # 加载原始程序
-    oracle_path = mutants_dir / "M00.py"
-    oracle_func = load_kernel_func(oracle_path)
-    
-    # 生成测试用例
-    test_cases = generate_test_cases(n_tests)
-    print(f"\n生成测试用例: {len(test_cases)}个")
-    
-    # 初始化判定引擎（可以尝试调整阈值）
-    oracle_engine = HierarchicalOracle()
-    # 临时调整阈值以强制进入Layer 2/3进行验证：
-    # oracle_engine.tolerance_strict = 1e-6  # 取消注释以测试
-    # oracle_engine.tolerance_loose = 1e-2   # 取消注释以测试
-    
-    # 统计容器（修复版）
-    results = {
-        'total_mutants': 0,
-        'true_kills': 0,
-        'pseudo_kills': 0,
-        'layer_reached': {1: 0, 2: 0, 3: 0},  # 变异体"到达过"该层
-        'layer_final': {1: 0, 2: 0, 3: 0},    # 变异体"最终判定"在该层
-        'layer2_details': [],  # 记录进入Layer 2的具体情况
-        'layer3_details': []   # 记录进入Layer 3的具体情况
-    }
-    
-    mutant_files = sorted([f for f in mutants_dir.glob("M[0-9][0-9].py") if f.stem != "M00"])
-    print(f"\n发现变异体: {len(mutant_files)}个")
-    
-    for m_file in mutant_files:
-        mid = m_file.stem
-        results['total_mutants'] += 1
-        
+def load_mutants(mutant_files):
+    mutant_funcs = {}
+    for mf in mutant_files:
+        name = mf.split(".")[0]
         try:
-            mut_func = load_kernel_func(m_file)
+            spec = importlib.util.spec_from_file_location(name, mf)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            mutant_funcs[name] = mod.rbf_kernel
         except Exception as e:
-            print(f"{mid}: 加载失败")
-            continue
+            print(f"[WARN] Failed to load {mf}: {e}")
+    return mutant_funcs
+
+# ==========================
+# 三层 Layered Decision Engine
+# ==========================
+def detect_generic_violations(output):
+    violations = []    
+    
+    if np.isnan(output).any():
+        # print(f'isnan: {output}; ')
+        # print(f'')    
+        violations.append("nan")
+    if np.isinf(output).any():
+        # print(f'isinf: {output}; ')
+        # print(f'')  
+        violations.append("inf")
+    return violations
+
+def detect_rbf_kernel_violations(K, tol=1e-5):
+    violations = detect_generic_violations(K)
+    if K is None or not isinstance(K, np.ndarray) or K.ndim != 2:
+        return ["invalid_output"] + violations
+    
+    n = K.shape[0]
+    
+    # 1. 基本性质
+    if not np.allclose(K, K.T, atol=tol):
+        violations.append("symmetry_violation")
+    if not np.allclose(np.diag(K), 1.0, atol=tol):
+        violations.append("diagonal_not_one")
+    
+    # 2. 范围检查
+    if (K < -tol).any(): violations.append("negative_values")
+    if (K > 1 + tol).any(): violations.append("exceeds_one")
+    
+    # 3. 正定性 & 谱分析
+    try:
+        eigs = np.linalg.eigvalsh(K)
+        if (eigs < -tol).any(): violations.append("non_psd")
+        if np.min(eigs) < 1e-12: violations.append("singular")
         
-        # 每个变异体跨所有测试用例的判定结果
-        test_results = []
-        layers_reached = set()  # 该变异体到达过的所有层
+        # 有效秩检查（RBF应有完整秩或接近完整）
+        rank = np.sum(eigs > tol)
+        if rank < n * 0.5: violations.append("low_rank")
         
-        for idx, (X, Y, gamma, eps, is_self) in enumerate(test_cases):
-            # 执行
-            try:
-                orig_out = oracle_func(X, Y, gamma, eps)
-            except Exception as e:
-                orig_out = None
+        # 迹异常（应为n）
+        if not np.isclose(np.trace(K), n, atol=tol*n):
+            violations.append("trace_violation")
             
-            try:
-                mut_out = mut_func(X, Y, gamma, eps)
-            except Exception as e:
-                mut_out = None
+    except: violations.append("eigenvalue_failure")
+    
+    # 4. 矩阵范数异常
+    frob_norm = np.linalg.norm(K, 'fro')
+    if frob_norm < np.sqrt(n) * 0.9: violations.append("contracted_norm")
+    if frob_norm > np.sqrt(n) * n: violations.append("expanded_norm")
+    
+    # 5. 行和/列和异常（如果是相似度矩阵，行和反映中心性）
+    row_sums = K.sum(axis=1)
+    if np.any(row_sums < 0): violations.append("negative_row_sum")
+    if np.allclose(row_sums, row_sums[0]) and n > 1:
+        violations.append("uniform_centrality")  # 异常均匀
+    
+    # 6. 稀疏性异常（RBF不应稀疏）
+    zero_ratio = np.sum(K < tol) / K.size
+    if zero_ratio > 0.5: violations.append("excessive_sparsity")
+    
+    # 7. 距离单调性违反（抽样检查）
+    if n > 2:
+        samples = np.random.choice(n, min(3, n), replace=False)
+        for i in samples:
+            for j in samples:
+                if i != j:
+                    # K[i,i] - K[i,j] 应 >= 0（自相似最大）
+                    if K[i,i] < K[i,j] - tol:
+                        violations.append("similarity_inversion")
+                        break
+    
+    # 8. 数值精度损失
+    if np.any(np.abs(K) < 1e-300) and np.any(np.abs(K) > 1e300):
+        violations.append("dynamic_range_collapse")
+    
+    # 9. 非对角线统计异常
+    off_diag = K[~np.eye(n, dtype=bool)]
+    if off_diag.size > 0:
+        if np.all(off_diag > 0.99): violations.append("near_identical")
+        if np.std(off_diag) < 1e-6: violations.append("homogeneous_offdiag")
+    
+
+    return sorted(list(set(violations)))
+
+def layered_decision_engine(oracle_out, mutant_out):
+    tol = 1e-9
+    
+    oracle_viol = detect_rbf_kernel_violations(oracle_out, tol)
+    mutant_viol = detect_rbf_kernel_violations(mutant_out, tol)
+
+    oracle_has = len(oracle_viol) > 0
+    mutant_has = len(mutant_viol) > 0    
+
+    # Layer 3 判定逻辑
+    # 1. 都没有违规
+    # if not oracle_has and not mutant_has:
+    #     return not np.allclose(oracle_out, mutant_out, atol=tol), oracle_viol, mutant_viol
+    # # 2. 保证其中一个违规一个不违规
+    # if oracle_has^mutant_has:
+    #     return True, oracle_viol, mutant_viol
+    # # 3. 两者都违规
+    # if set(oracle_viol) != set(mutant_viol):       
+    #     return True, oracle_viol, mutant_viol
+    # return False, oracle_viol, mutant_viol
+
+    return not np.allclose(oracle_out, mutant_out, atol=tol), oracle_viol, mutant_viol
+
+# ==========================
+# 运行测试
+# ==========================
+oracle = load_oracle()
+def run_test(func, X_Y_tuple, gamma=1.0):
+    X, Y = X_Y_tuple
+    old = np.seterr(over='raise')
+    K, K_O = [], []
+    f_err, o_err = None, None
+    
+    try:
+        try:
+            K = func(X, Y, gamma=gamma)
+        except FloatingPointError:
+            f_err = "inf"
+        except Exception:
+            f_err = "exception"
+        
+        if K is None:
+            K=[]
+            f_err = "exception"
+            # print(f'f_err========================{f_err}')
+
+        try:
+            K_O = oracle(X, Y, gamma=gamma)
+        except FloatingPointError:
+            o_err = "inf"
+        except Exception:
+            o_err = "exception"
+        if K_O is None:
+            K_O=[]
+            o_err = "exception"
+            # print(f'o_err========================{f_err}')
+        
+        # 关键修正：任意一方异常都立即返回，不执行引擎
+        if f_err is not None and o_err is not None:
+            t=f_err==o_err
+            return t, [o_err], [f_err]
+        if f_err:
+            return True, [], [f_err]
+        if o_err:
+            return True, [o_err], []
+        
+        # 只有两者都正常时才执行决策引擎
+        killed, o_viol, m_viol = layered_decision_engine(K_O, K)
+        return killed, o_viol, m_viol
+    finally:       
+        np.seterr(**old)
+
+# ==========================
+# 构建指纹 & MS & 违规类型覆盖
+# ==========================
+def build_fingerprints(mutant_funcs, tests):
+    fingerprints = {}
+    ms_per_mutant = {}
+    violation_map = {}  # 存每个变异体覆盖的违规类型
+    all_viol_types = set() #全部可能的违规类型代码
+    
+    for name, func in mutant_funcs.items():
+        vec = np.zeros(len(all_behavior_types)) #全局行为类型向量
+        killed_list = []
+        viol_types = set()
+        for i,test in enumerate(tests):
+            killed, o_viol, m_viol = run_test(func, test)
+            killed_list.append(1 if killed else 0)
+            viol_types.update(m_viol)
+            all_viol_types.update(m_viol)  # 收集和去重所有类型
             
-            expected_shape = (X.shape[0], Y.shape[0] if Y is not None else X.shape[0])
-            
-            # 判定
-            judgment = oracle_engine.judge(orig_out, mut_out, expected_shape, is_self)
-            if judgment['layer'] == 3 and '原始' in judgment.get('reason', ''):
-                print(f"\n[调试] {mid} 测试用例 {idx}:")
-                print(f"  is_self: {is_self} (X=Y? {Y is X or Y is None})")
-                print(f"  gamma={gamma:.2e}, eps={eps:.2e}")
-                
-                if isinstance(orig_out, np.ndarray):
-                    print(f"  原始输出形状: {orig_out.shape}")
-                    print(f"  原始输出 min/max: {np.min(orig_out):.2e} / {np.max(orig_out):.2e}")
-                    if orig_out.ndim == 2 and orig_out.shape[0] > 0:
-                        print(f"  原始对角线前3个: {np.diag(orig_out)[:3]}")
-                        print(f"  原始对称误差: {np.max(np.abs(orig_out - orig_out.T)):.2e}")
-                
-                # 显示Layer 2的详细信息
-                layer2_details = judgment['details'].get('layer2', {})
-                print(f"  原始违反约束: {layer2_details.get('orig_violations', set())}")
-                print(f"  变异违反约束: {layer2_details.get('mut_violations', set())}")
+            for viol in m_viol:
+                if viol in all_behavior_types:
+                    idx=all_behavior_types.index(viol)
+                    weight = 1 #+ 0.01 * ((i*idx) / len(tests))  # i 从 0 到 n_tests-1
+                    vec[idx]+=weight
 
-            test_results.append(judgment)
-            layers_reached.add(judgment['layer'])
-            
-            # 记录进入Layer 2/3的具体案例（用于调试）
-            if judgment['layer'] == 2:
-                results['layer2_details'].append({
-                    'mid': mid,
-                    'test_idx': idx,
-                    'reason': judgment['reason'],
-                    'orig_violations': judgment['details'].get('orig_violations', set()),
-                    'mut_violations': judgment['details'].get('mut_violations', set())
-                })
-            elif judgment['layer'] == 3:
-                results['layer3_details'].append({
-                    'mid': mid,
-                    'test_idx': idx,
-                    'reason': judgment['reason']
-                })
-        
-        # 汇总该变异体
-        kill_count = sum(1 for r in test_results if r['is_kill'])
-        equiv_count = sum(1 for r in test_results if r['is_equiv'])
-        
-        # 更新"到达过"的统计
-        for layer in layers_reached:
-            results['layer_reached'][layer] += 1
-        
-        # 最终判定（只要有1个杀死，就算杀死）
-        is_killed = kill_count > 0
-        is_equiv = equiv_count == len(test_results)
-        
-        if is_killed:
-            results['true_kills'] += 1
-        else:
-            results['pseudo_kills'] += 1
-        
-        # 最终判定层：取最深的层（3>2>1）
-        final_layer = max(layers_reached)
-        results['layer_final'][final_layer] += 1
-    
-    # 输出结果
-    print("\n" + "="*60)
-    print("实验结果统计（修复版）")
-    print("="*60)
-    print(f"总变异体数: {results['total_mutants']}")
-    print(f"真实杀死: {results['true_kills']} ({results['true_kills']/results['total_mutants']*100:.1f}%)")
-    print(f"伪杀死(等效): {results['pseudo_kills']} ({results['pseudo_kills']/results['total_mutants']*100:.1f}%)")
-    
-    print(f"\n【关键】到达过各层的变异体数:")
-    print(f"  Layer 1 (数值容差): {results['layer_reached'][1]}个")
-    print(f"  Layer 2 (约束检查): {results['layer_reached'][2]}个")  
-    print(f"  Layer 3 (模式相似): {results['layer_reached'][3]}个")
-    
-    print(f"\n【最终判定】在各层的变异体数:")
-    print(f"  Layer 1: {results['layer_final'][1]}个")
-    print(f"  Layer 2: {results['layer_final'][2]}个")
-    print(f"  Layer 3: {results['layer_final'][3]}个")
-    
-    # 显示Layer 2/3的具体案例
-    if results['layer2_details']:
-        print(f"\n进入Layer 2的测试用例数: {len(results['layer2_details'])}")
-        print("示例（前3个）:")
-        for detail in results['layer2_details'][:3]:
-            print(f"  {detail['mid']}[测试{detail['test_idx']}]: {detail['reason']}")
-    
-    if results['layer3_details']:
-        print(f"\n进入Layer 3的测试用例数: {len(results['layer3_details'])}")
-        print("示例（前3个）:")
-        for detail in results['layer3_details'][:3]:
-            print(f"  {detail['mid']}[测试{detail['test_idx']}]: {detail['reason']}")
-    else:
-        print(f"\n进入Layer 3的测试用例数: 0")
-# =====================================================
-# 5. 主入口
-# =====================================================
+        ms_per_mutant[name] = np.mean(killed_list)
+        fingerprints[name] = np.array(killed_list, dtype=float)
+        violation_map[name] = vec
+        # print(f"[INFO] Original MS: {name} killed {np.sum(killed_list)}/{len(tests)} = {ms_per_mutant[name]:.2f}")
+        # print(f'输出多样性({len(all_viol_types)})：{vec}')
+        # print(f'kill向量：({len(killed_list)})：{killed_list}')
+        # print(f"[INFO] Original MS: {name} killed {np.sum(killed_list)}/{len(tests)} = {ms_per_mutant[name]:.2f}")
+    return fingerprints, ms_per_mutant, violation_map
+ 
+def save_tests_fingerprints(tests,kill_matrix,violation_map,ms_per_mutant):
+    with open('vp.pkl','wb') as f:
+        pickle.dump({
+            'tests':tests,
+            'kill_matrix':kill_matrix,
+            'violation_map':violation_map,
+            'ms_per_mutant':ms_per_mutant
+        },f)
 
-# if __name__ == "__main__":
-#     # 假设脚本在变异体目录中运行，或指定目录
-#     import argparse
-    
-#     parser = argparse.ArgumentParser()
-#     parser.add_argument('--dir', type=str, default='.', help='变异体所在目录')
-#     parser.add_argument('--n_tests', type=int, default=50, help='测试用例数')
-#     args = parser.parse_args()
-    
-#     mutants_dir = Path(args.dir)
-#     run_experiment(mutants_dir, args.n_tests)
+def load_test_fingerprints():
+    with open('vp.pkl','rb') as f:
+        all=pickle.load(f)
+    return all
 
-def test_layer2_trigger_fixed():
-    """修复版：正确构造 Layer 2 触发场景"""
-    print("\n" + "="*60)
-    print("强制触发 Layer 2/3 测试（修复版）")
-    print("="*60)
-    
-    oracle = HierarchicalOracle()
-    # 调整阈值，让 1e-6 落在模糊区
-    oracle.tolerance_strict = 1e-8
-    oracle.tolerance_loose = 1e-4
-
-    # 【场景1】两者都轻微不对称（修复：让原始也有轻微不对称）
-    print("\n【场景1】两者都轻微不对称（应进入Layer 3）")
-    K_orig = np.array([
-        [1.0, 0.60653066, 0.13533528],
-        [0.60653066, 1.0, 0.60653066],
-        [0.13533528, 0.60653066, 1.0]
-    ])
-    # 给原始也添加轻微不对称（1e-6 级）
-    K_orig[0, 1] += 0.5e-6
-    K_orig[1, 0] -= 0.5e-6  # 现在原始也是轻微不对称
-    
-    K_mut = K_orig.copy()
-    K_mut[0, 1] += 1e-6  # 不对称程度稍大
-    K_mut[1, 0] -= 1e-6
-    
-    result = oracle.judge(K_orig, K_mut, (3, 3), True)
-    print(f"判定结果: Layer {result['layer']}")
-    if result['layer'] >= 2:
-        layer2 = result['details']['layer2']
-        print(f"原始违反: {layer2['orig_violations']}")
-        print(f"变异违反: {layer2['mut_violations']}")
-        if result['layer'] == 3:
-            print(f"Layer 3判定: {result['details']['layer3']['is_equiv']}")
-
-    # 【场景2】两者都轻微超范围（应进入Layer 3且等效）
-    print("\n【场景2】两者都轻微超范围（应等效）")
-    K_orig2 = np.array([
-        [1.0, 1.000001, 0.5],  # 1.000001 轻微超范围
-        [1.000001, 1.0, 0.5],
-        [0.5, 0.5, 1.0]
-    ])
-    K_mut2 = K_orig2.copy()
-    K_mut2[0, 1] = 1.000002  # 同样轻微超范围，程度相近
-    
-    result2 = oracle.judge(K_orig2, K_mut2, (3, 3), True)
-    print(f"判定结果: Layer {result2['layer']}, 等效: {result2['is_equiv']}")
-    if result2['layer'] >= 2:
-        print(f"违反约束: {result2['details']['layer2']['orig_violations']}")
-
+# ==========================
+# 示例运行
+# ==========================
 if __name__ == "__main__":
-    test_layer2_trigger_fixed()
+    categories = {
+        'Numerical Stability':   [0, 4, 5, 7, 13, 14, 17, 19, 20, 21],  # invalid_output, near_identical, nan, singular, inf, exception, expanded_norm, eigenvalue_failure, contracted_norm, never_happen
+        'Statistical Moments':   [2, 8, 11, 15],                           # uniform_centrality, negative_row_sum, trace_violation, homogeneous_offdiag
+        'Distributional Axiom':  [1, 3, 9, 10],                            # negative_values, exceeds_one, non_psd, similarity_inversion
+        'Structural Invariants': [6, 12, 16, 18]                           # symmetry_violation, low_rank, excessive_sparsity, diagonal_not_one
+    }
+    mutant_files = [f"M{i:02d}.py" for i in range(1, 76)]
+    tests = generate_lhs_tests(n_samples=300)
+    mutant_funcs = load_mutants(mutant_files)
+    kill_matrix, ms_per_mutant, violation_map = build_fingerprints(mutant_funcs, tests)
+    
+#region RQ1 experiment CM Metrics
+    # plot_cm_both(kill_matrix,violation_map)
+    # plot_km_fp_confusion_heatmap(kill_matrix,violation_map)
+    # matrix=plot_km_layer_heatmap(kill_matrix,violation_map,categories) #这个有问题
+    # print(matrix)
+#endregion
+    
+#region RQ1 significance test
+    # a=analyze_single_operator('softmax',kill_matrix,violation_map)
+    # print_operator_summary(a)
+#endregion
+    
+#region RQ2:experiment A-C
+    # print('RQ2:experiment A: Metrics')
+    # v=compute_rq2_metrics(kill_matrix, violation_map,categories)
+    # print(v)
+
+    # print('RQ2:experiment B: fingerprint tsne')
+    # plot_fingerprint_tsne(violation_map,categories,save_path='rq2\tsne.png')
+
+    print('RQ2:experiment C: 3 Cases ')
+    cases=extract_case_studies(kill_matrix,violation_map,categories)
+    for c in cases:
+        print(f"\nCase: {c['m1']} vs {c['m2']}")
+        print(f"  KM pattern: {c['km_pattern'][:5]}... (same class)")
+    print(f"  FP({c['m1']}): {c['fp_m1']} → {c['layer_name_m1']} (L{c['dominant_m1']})")
+    print(f"  FP({c['m2']}): {c['fp_m2']} → {c['layer_name_m2']} (L{c['dominant_m2']})")    
+    plot_cases()
+#endregion
+   
+#region RQ3: experiment
+    print('RQ3: experiment')    
+    results = run_rq3_experiment(kill_matrix, violation_map, categories)
+    for strategy, metrics in results.items():
+        print(f"\n{strategy}:")
+        for k, v in metrics.items():
+            print(f"  {k}: {v}")
+
+#endregion
+
+#region RQ4 experiment A
+    print('RQ4 experiment A: CI Interception Rate Validation')
+    print('='*40)
+    thresholds = [0.80, 0.85, 0.90, 0.95, 1.00]
+    for th in thresholds:
+        result = run_rq4_experiment_a(
+            kill_matrix, violation_map, categories,
+            n_fine=20, survival_rate_threshold=th, debug=True
+        )
+
+    print(f"Stage 1 Passed: {result['operator_summary']['stage1_passed']}")
+    print(f"Stage 1 Failed: {result['operator_summary']['stage1_failed']}")
+    print(f"Stage 2 Intercepted: {result['operator_summary']['stage2_intercepted']}")
+    print(f"Stage 2 Clean Pass: {result['operator_summary']['stage2_clean_pass']}")
+    print(f"IR: {result['core_metrics']['Interception_Rate_IR']:.2%}")
+    print(f"CPR: {result['core_metrics']['Clean_Pass_Rate_CPR']:.2%}")
+    plot_coverage(kill_matrix, violation_map)
+    print('='*40)
+    sr_vals = []
+    for n in kill_matrix:
+        km = np.asarray(kill_matrix[n])
+        sr = np.mean(km == 0)
+        sr_vals.append((n, sr))
+
+    # 按存活率降序排列
+    sr_sorted = sorted(sr_vals, key=lambda x: x[1], reverse=True)
+
+    print("=== 存活率 Top 35 ===")
+    for i, (n, sr) in enumerate(sr_sorted[:35]):
+        flag = " >=0.95" if sr >= 0.95 else " >=0.90" if sr >= 0.90 else ""
+        print(f"{n}: {sr:.4f}{flag}")
+
+    print(f"\n=== 关键统计 ===")
+    print(f"存活率 >= 0.95: {sum(1 for _, sr in sr_vals if sr >= 0.95)}")
+    print(f"存活率 >= 0.90: {sum(1 for _, sr in sr_vals if sr >= 0.90)}")
+    print(f"存活率 >= 1.00: {sum(1 for _, sr in sr_vals if sr >= 1.00)}")
+    print(f"最高存活率: {max(sr for _, sr in sr_vals):.4f}")
+#endregion
+
+#region RQ4 experiment B
+    # 1. 运行实验 A（固定 threshold，非循环）
+    result_a = run_rq4_experiment_a(
+        kill_matrix, violation_map, categories,
+        n_fine=20, 
+        survival_rate_threshold=0.90,   # Softmax / LayerNorm 用 0.90
+        debug=False                       # 关闭调试输出
+    )
+
+
+    # 2. 提取 intercepted 变异体列表
+    intercepted_mutants = result_a['intercepted_analysis']['intercepted_ids']
+
+    print(f"实验 A 拦截变异体数: {len(intercepted_mutants)}")
+    print(f"示例 ID: {intercepted_mutants[:5]}")
+
+    # 3. 直接传入实验 B
+    result_b = run_rq4_experiment_b(
+        intercepted_mutants=intercepted_mutants,
+        violation_map=violation_map,
+        categories=categories,
+        n_fine=20
+    )
+
+    # 4. 打印实验 B 核心指标
+    print(f"样本量: {result_b['sample_size']}")
+    print(f"DSC_KM={result_b['granularity']['DSC_KM']}")
+    print(f"DSC_FP_strict={result_b['granularity']['DSC_FP_strict']}")
+    print(f"DSC_FP_binned={result_b['granularity']['DSC_FP_binned']}")
+    print(f"MLCR={result_b['granularity']['MLCR']}")
+    print(f"DE_FP={result_b['diagnostic_entropy']['DE_FP_raw']:.3f} bits")
+    print(f"DE_normalized={result_b['diagnostic_entropy']['DE_FP_normalized']:.3f}")
+    print(f"Entropy gain={result_b['diagnostic_entropy']['entropy_gain']:.3f} bits")
+
+    for case in result_b['case_reports']:
+        print(f"\n--- 案例: {case['mutant_1']} vs {case['mutant_2']} ---")
+        print(f"主导层: {case['dominant_layer']}")
+        print(f"Kill-Matrix: {case['km_diagnosis']}")
+        print(f"指纹差异: L1距离={case['l1_distance']}")
+        print(f"  {case['mutant_1']}: {case['fp_insight_m1']}")
+        print(f"  {case['mutant_2']}: {case['fp_insight_m2']}")
+#endregion
+
 

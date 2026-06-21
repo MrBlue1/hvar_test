@@ -922,129 +922,128 @@ if __name__ == "__main__":
     # 生成变异体文件列表 M01.py 到 M120.py
     mutant_files = [f"mutants/M{i:02d}.py" for i in range(1, 121)]
     mutants = load_mutants(mutant_files)
-
     kill_matrix, ms_per_mutant, violation_map = build_fingerprints(mutants, test_cases)
     
 #region RQ1 experiment CM Metrics
-    # plot_cm_both(kill_matrix,violation_map)
-    # plot_km_fp_confusion_heatmap(kill_matrix,violation_map)
-    # matrix=plot_km_layer_heatmap(kill_matrix,violation_map,categories) #这个有问题
-    # print(matrix)
+    plot_cm_both(kill_matrix,violation_map)
+    plot_km_fp_confusion_heatmap(kill_matrix,violation_map)
+    matrix=plot_km_layer_heatmap(kill_matrix,violation_map,categories) #这个有问题
+    print(matrix)
 #endregion
     
 #region RQ1 significance test
-    # a=analyze_single_operator('softmax',kill_matrix,violation_map)
-    # print_operator_summary(a)
+    a=analyze_single_operator('softmax',kill_matrix,violation_map)
+    print_operator_summary(a)
 #endregion
     
 #region RQ2:experiment A-C
-    # print('RQ2:experiment A: Metrics')
-    # v=compute_rq2_metrics(kill_matrix, violation_map,categories)
-    # print(v)
+    print('RQ2:experiment A: Metrics')
+    v=compute_rq2_metrics(kill_matrix, violation_map,categories)
+    print(v)
 
-    # print('RQ2:experiment B: fingerprint tsne')
-    # plot_fingerprint_tsne(violation_map,categories,save_path='rq2\tsne.png')
+    print('RQ2:experiment B: fingerprint tsne')
+    plot_fingerprint_tsne(violation_map,categories,save_path='rq2\tsne.png')
 
-    # print('RQ2:experiment C: 3 Cases ')
-    # cases=extract_case_studies(kill_matrix,violation_map,categories)
-    # for c in cases:
-    #     print(f"\nCase: {c['m1']} vs {c['m2']}")
-    #     print(f"  KM pattern: {c['km_pattern'][:5]}... (same class)")
-    #     print(f"  FP({c['m1']}): {c['fp_m1']} → {c['layer_name_m1']} (L{c['dominant_m1']})")
-    #     print(f"  FP({c['m2']}): {c['fp_m2']} → {c['layer_name_m2']} (L{c['dominant_m2']})")    
-    # plot_cases()
+    print('RQ2:experiment C: 3 Cases ')
+    cases=extract_case_studies(kill_matrix,violation_map,categories)
+    for c in cases:
+        print(f"\nCase: {c['m1']} vs {c['m2']}")
+        print(f"  KM pattern: {c['km_pattern'][:5]}... (same class)")
+        print(f"  FP({c['m1']}): {c['fp_m1']} → {c['layer_name_m1']} (L{c['dominant_m1']})")
+        print(f"  FP({c['m2']}): {c['fp_m2']} → {c['layer_name_m2']} (L{c['dominant_m2']})")    
+    plot_cases()
 #endregion
    
 #region RQ3: experiment
-print('RQ3: experiment')    
-results = run_rq3_experiment(kill_matrix, violation_map, categories)
-for strategy, metrics in results.items():
-    print(f"\n{strategy}:")
-    for k, v in metrics.items():
-        print(f"  {k}: {v}")
+    print('RQ3: experiment')    
+    results = run_rq3_experiment(kill_matrix, violation_map, categories)
+    for strategy, metrics in results.items():
+        print(f"\n{strategy}:")
+        for k, v in metrics.items():
+            print(f"  {k}: {v}")
 
 #endregion
 
 #region RQ4 experiment A
-# print('RQ4 experiment A: CI Interception Rate Validation')
-# print('='*40)
-# thresholds = [0.80, 0.85, 0.90, 0.95, 1.00]
-# for th in thresholds:
-#     result = run_rq4_experiment_a(
-#         kill_matrix, violation_map, categories,
-#         n_fine=20, survival_rate_threshold=th, debug=True
-#     )
+    print('RQ4 experiment A: CI Interception Rate Validation')
+    print('='*40)
+    thresholds = [0.80, 0.85, 0.90, 0.95, 1.00]
+    for th in thresholds:
+        result = run_rq4_experiment_a(
+            kill_matrix, violation_map, categories,
+            n_fine=20, survival_rate_threshold=th, debug=True
+        )
 
-# print(f"Stage 1 Passed: {result['operator_summary']['stage1_passed']}")
-# print(f"Stage 1 Failed: {result['operator_summary']['stage1_failed']}")
-# print(f"Stage 2 Intercepted: {result['operator_summary']['stage2_intercepted']}")
-# print(f"Stage 2 Clean Pass: {result['operator_summary']['stage2_clean_pass']}")
-# print(f"IR: {result['core_metrics']['Interception_Rate_IR']:.2%}")
-# print(f"CPR: {result['core_metrics']['Clean_Pass_Rate_CPR']:.2%}")
-# plot_coverage(kill_matrix, violation_map)
-# print('='*40)
-# sr_vals = []
-# for n in kill_matrix:
-#     km = np.asarray(kill_matrix[n])
-#     sr = np.mean(km == 0)
-#     sr_vals.append((n, sr))
+    print(f"Stage 1 Passed: {result['operator_summary']['stage1_passed']}")
+    print(f"Stage 1 Failed: {result['operator_summary']['stage1_failed']}")
+    print(f"Stage 2 Intercepted: {result['operator_summary']['stage2_intercepted']}")
+    print(f"Stage 2 Clean Pass: {result['operator_summary']['stage2_clean_pass']}")
+    print(f"IR: {result['core_metrics']['Interception_Rate_IR']:.2%}")
+    print(f"CPR: {result['core_metrics']['Clean_Pass_Rate_CPR']:.2%}")
+    plot_coverage(kill_matrix, violation_map)
+    print('='*40)
+    sr_vals = []
+    for n in kill_matrix:
+        km = np.asarray(kill_matrix[n])
+        sr = np.mean(km == 0)
+        sr_vals.append((n, sr))
 
-# # 按存活率降序排列
-# sr_sorted = sorted(sr_vals, key=lambda x: x[1], reverse=True)
+    # 按存活率降序排列
+    sr_sorted = sorted(sr_vals, key=lambda x: x[1], reverse=True)
 
-# print("=== 存活率 Top 35 ===")
-# for i, (n, sr) in enumerate(sr_sorted[:35]):
-#     flag = " >=0.95" if sr >= 0.95 else " >=0.90" if sr >= 0.90 else ""
-#     print(f"{n}: {sr:.4f}{flag}")
+    print("=== 存活率 Top 35 ===")
+    for i, (n, sr) in enumerate(sr_sorted[:35]):
+        flag = " >=0.95" if sr >= 0.95 else " >=0.90" if sr >= 0.90 else ""
+        print(f"{n}: {sr:.4f}{flag}")
 
-# print(f"\n=== 关键统计 ===")
-# print(f"存活率 >= 0.95: {sum(1 for _, sr in sr_vals if sr >= 0.95)}")
-# print(f"存活率 >= 0.90: {sum(1 for _, sr in sr_vals if sr >= 0.90)}")
-# print(f"存活率 >= 1.00: {sum(1 for _, sr in sr_vals if sr >= 1.00)}")
-# print(f"最高存活率: {max(sr for _, sr in sr_vals):.4f}")
+    print(f"\n=== 关键统计 ===")
+    print(f"存活率 >= 0.95: {sum(1 for _, sr in sr_vals if sr >= 0.95)}")
+    print(f"存活率 >= 0.90: {sum(1 for _, sr in sr_vals if sr >= 0.90)}")
+    print(f"存活率 >= 1.00: {sum(1 for _, sr in sr_vals if sr >= 1.00)}")
+    print(f"最高存活率: {max(sr for _, sr in sr_vals):.4f}")
 #endregion
 
 #region RQ4 experiment B
     # 1. 运行实验 A（固定 threshold，非循环）
-# result_a = run_rq4_experiment_a(
-#     kill_matrix, violation_map, categories,
-#     n_fine=20, 
-#     survival_rate_threshold=0.90,   # Softmax / LayerNorm 用 0.90
-#     debug=False                       # 关闭调试输出
-# )
+    result_a = run_rq4_experiment_a(
+        kill_matrix, violation_map, categories,
+        n_fine=20, 
+        survival_rate_threshold=0.90,   # Softmax / LayerNorm 用 0.90
+        debug=False                       # 关闭调试输出
+    )
 
 
-# # 2. 提取 intercepted 变异体列表
-# intercepted_mutants = result_a['intercepted_analysis']['intercepted_ids']
+    # 2. 提取 intercepted 变异体列表
+    intercepted_mutants = result_a['intercepted_analysis']['intercepted_ids']
 
-# print(f"实验 A 拦截变异体数: {len(intercepted_mutants)}")
-# print(f"示例 ID: {intercepted_mutants[:5]}")
+    print(f"实验 A 拦截变异体数: {len(intercepted_mutants)}")
+    print(f"示例 ID: {intercepted_mutants[:5]}")
 
-# # 3. 直接传入实验 B
-# result_b = run_rq4_experiment_b(
-#     intercepted_mutants=intercepted_mutants,
-#     violation_map=violation_map,
-#     categories=categories,
-#     n_fine=20
-# )
+    # 3. 直接传入实验 B
+    result_b = run_rq4_experiment_b(
+        intercepted_mutants=intercepted_mutants,
+        violation_map=violation_map,
+        categories=categories,
+        n_fine=20
+    )
 
-# # 4. 打印实验 B 核心指标
-# print(f"样本量: {result_b['sample_size']}")
-# print(f"DSC_KM={result_b['granularity']['DSC_KM']}")
-# print(f"DSC_FP_strict={result_b['granularity']['DSC_FP_strict']}")
-# print(f"DSC_FP_binned={result_b['granularity']['DSC_FP_binned']}")
-# print(f"MLCR={result_b['granularity']['MLCR']}")
-# print(f"DE_FP={result_b['diagnostic_entropy']['DE_FP_raw']:.3f} bits")
-# print(f"DE_normalized={result_b['diagnostic_entropy']['DE_FP_normalized']:.3f}")
-# print(f"Entropy gain={result_b['diagnostic_entropy']['entropy_gain']:.3f} bits")
+    # 4. 打印实验 B 核心指标
+    print(f"样本量: {result_b['sample_size']}")
+    print(f"DSC_KM={result_b['granularity']['DSC_KM']}")
+    print(f"DSC_FP_strict={result_b['granularity']['DSC_FP_strict']}")
+    print(f"DSC_FP_binned={result_b['granularity']['DSC_FP_binned']}")
+    print(f"MLCR={result_b['granularity']['MLCR']}")
+    print(f"DE_FP={result_b['diagnostic_entropy']['DE_FP_raw']:.3f} bits")
+    print(f"DE_normalized={result_b['diagnostic_entropy']['DE_FP_normalized']:.3f}")
+    print(f"Entropy gain={result_b['diagnostic_entropy']['entropy_gain']:.3f} bits")
 
-# for case in result_b['case_reports']:
-#     print(f"\n--- 案例: {case['mutant_1']} vs {case['mutant_2']} ---")
-#     print(f"主导层: {case['dominant_layer']}")
-#     print(f"Kill-Matrix: {case['km_diagnosis']}")
-#     print(f"指纹差异: L1距离={case['l1_distance']}")
-#     print(f"  {case['mutant_1']}: {case['fp_insight_m1']}")
-#     print(f"  {case['mutant_2']}: {case['fp_insight_m2']}")
+    for case in result_b['case_reports']:
+        print(f"\n--- 案例: {case['mutant_1']} vs {case['mutant_2']} ---")
+        print(f"主导层: {case['dominant_layer']}")
+        print(f"Kill-Matrix: {case['km_diagnosis']}")
+        print(f"指纹差异: L1距离={case['l1_distance']}")
+        print(f"  {case['mutant_1']}: {case['fp_insight_m1']}")
+        print(f"  {case['mutant_2']}: {case['fp_insight_m2']}")
 #endregion
 
 
