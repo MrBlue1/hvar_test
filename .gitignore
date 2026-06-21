@@ -1,0 +1,24 @@
+# Python虚拟环境（你目录里这几个全部屏蔽，不上传）
+ast_venv/
+Scripts/
+Lib/
+Include/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+env/
+
+# 日志、缓存文件
+*.log
+*.out
+.cache/
+tmp/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 文档生成缓存
+docs/_build/

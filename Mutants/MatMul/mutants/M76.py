@@ -1,0 +1,16 @@
+def matmul(A, B):
+    m = len(A)
+    n = len(A[0])
+    p = len(B[0])
+    
+    C = [[0] * p for _ in range(m)]
+    
+    for i in range(m):
+        for j in range(p):
+            sum_val = 0
+            for k in range(n):
+                A[i][k] = A[i][k] * 2  # 修改输入矩阵A
+                sum_val += A[i][k] * B[k][j]
+            C[i][j] = sum_val
+            
+    return C
