@@ -15,6 +15,7 @@ the RQ2 inclues 3 experiments: Metrics, fingerprint tsne and 3 Cases analysis, a
 the RQ3 inclues 2 experiments: HVAR pipeline and the Ablation Test, and the exepriments will plot the result data
 the RQ4 inclues 2 experiments: Metrics for Mutant Pass & Diagnostic info for Intercepted Mutants, and the exepriments will plot the result data
 
+All the running data will be shown in the terminal. 
 
 
 
