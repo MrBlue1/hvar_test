@@ -90,19 +90,21 @@ def aggregate_to_4layers(violation_entry, categories, n_fine=20):
         layer_counts[i] = arr[valid_idx].sum()
     return layer_counts, layer_names
 
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.manifold import TSNE
+
 def plot_fingerprint_tsne(violation_map, categories, op_name="Softmax", 
                                      save_path=None, figsize=(11, 9), dpi=300):
     """
     多层叠加圆 t-SNE：每层独立用圆大小表示触发频次，避免 argmax 硬标签淹没次要层。
     """
-    # ===== 新增：自动创建保存目录兜底 =====
-    import os
-    # ========== 修复目录创建代码 ==========
+    # 修复：仅当folder不为空字符串时才创建目录，规避空路径报错
     if save_path is not None:
         folder = os.path.dirname(save_path)
-        # 无论是否存在，直接创建，exist_ok=True不存在自动建
-        os.makedirs(folder, exist_ok=True)
-    # ======================================
+        if folder:
+            os.makedirs(folder, exist_ok=True)
 
     names = list(violation_map.keys())
     M = len(names)
@@ -178,6 +180,7 @@ def plot_fingerprint_tsne(violation_map, categories, op_name="Softmax",
     plt.show()
     return emb, X_raw
 
+
 def extract_case_studies(kill_matrix, violation_map, categories, n_fine=20, max_cases=3):
     """
     基于四层聚合指纹，抽取 Kill-Matrix 同组但指纹不同的典型案例。
@@ -252,13 +255,8 @@ def extract_case_studies(kill_matrix, violation_map, categories, n_fine=20, max_
     
     return cases
 
-import os
-import numpy as np
-import matplotlib.pyplot as plt
-
-
 def plot_cases(save_dir="rq2", dpi=600):
-
+    # 修复：直接创建目标文件夹，无需取dirname
     os.makedirs(save_dir, exist_ok=True)
 
     plt.rcParams.update({
@@ -410,22 +408,15 @@ def plot_cases(save_dir="rq2", dpi=600):
     )
 
     plt.savefig(
-        pdf_file,
-        bbox_inches="tight"
-    )
-
-    plt.savefig(
         png_file,
         dpi=dpi,
         bbox_inches="tight"
     )
-
+    plt.show()
     plt.close()
 
     print("Saved:")
-    print(pdf_file)
-    print(png_file)
-
+    
 
 
 

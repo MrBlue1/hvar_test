@@ -8,10 +8,10 @@ from Mutants.mutant_ananlysis import detect_fingerprint_collisions, analyze_sing
 from Mutants.experiment_1 import plot_coverage,plot_cm_both,plot_km_fp_confusion_heatmap,plot_km_layer_heatmap,plot_rq1_McNemar_test
 from Mutants.experiment_rq2 import compute_rq2_metrics,plot_fingerprint_tsne,extract_case_studies,plot_cases
 from Mutants.experiment_rq3 import run_rq3_experiment,plot_HVAR_by_qr3_data
-from Mutants.experiment_rq4 import run_rq4_experiment_a,run_rq4_experiment_b,experiment_qr4_plot
-
+from Mutants.experiment_rq4 import run_rq4_experiment_a,run_rq4_experiment_b ,experiment_qr4_plot
+from plot_perturb_test_result import plotPerturb_test_softmax
 import pickle
-import torch
+# import torch
 import numpy as np
 
 all_behavior_types = [    
@@ -569,7 +569,7 @@ def load_fingerprints(load_path='vp.pkl'):
         fingerprints=pickle.load(f)
     return fingerprints
 
-#region 数值扰动试验
+#region Pertubation Test
 # ============================================
 # 实验二（修正版）：输入空间扰动的数值饱和吸收实验
 # 变更点：增加细粒度 20 种违规类型的独立统计与穿透分析
@@ -659,7 +659,7 @@ def generate_lhs_samples_v2(n: int, seed: Optional[int] = None,
     return test_cases
 
 # -------------------------------------------------
-# 1. 扰动施加函数（与上一版相同）
+# 1. add input perturbation 
 # -------------------------------------------------
 def perturb_gaussian_noise(logits: np.ndarray, sigma: float = 0.1) -> np.ndarray:
     noise = np.random.randn(*logits.shape).astype(logits.dtype) * sigma
@@ -704,6 +704,7 @@ PERTURBATION_REGISTRY = {
     'precision_degradation': perturb_precision_degradation,
 }
 
+# apply perturbation
 def apply_perturbation(test_case: Tuple, perturb_type: str,
                        perturb_params: Optional[dict] = None) -> Tuple:
     logits, temp, axis = test_case
@@ -995,7 +996,7 @@ def main_experiment_2(test_cases=None,
 #endregion
 
 if __name__=='__main__':
-    # 定义四分类与违规分类映射
+    # Four_Layer fine grind Map
     categories = {
         'Numerical Stability': [1, 2, 5, 12, 16, 17, 18],      
         'Statistical Moments': [8, 9, 10, 11],  
@@ -1009,6 +1010,7 @@ if __name__=='__main__':
     tests = load_fixed_test_suite()
     
     mutant_funcs = load_mutants(mutant_files)
+    # generate fingerPrint and kill_matrix
     kill_matrix, ms_per_mutant, violation_map = build_fingerprints(mutant_funcs, tests)
     # f_p=load_fingerprints()
     # kill_matrix=f_p["kill_matrix"]
@@ -1018,7 +1020,12 @@ if __name__=='__main__':
     plot_cm_both(kill_matrix,violation_map)
     plot_km_fp_confusion_heatmap(kill_matrix,violation_map)    
 #endregion
-    
+
+#region RQ1 experiment Perturbation Test
+    main_experiment_2(tests)
+    plotPerturb_test_softmax()
+#endregion    
+   
 #region RQ1 significance test
     a=analyze_single_operator('softmax',kill_matrix,violation_map)
     print_operator_summary(a)
@@ -1031,7 +1038,7 @@ if __name__=='__main__':
     print(v)
 
     print('RQ2:experiment B: fingerprint tsne')
-    plot_fingerprint_tsne(violation_map,categories,save_path='rq2\tsne.png')
+    plot_fingerprint_tsne(violation_map,categories,save_path=r'rq2\tsne.png')
 
     print('RQ2:experiment C: 3 Cases ')
     cases=extract_case_studies(kill_matrix,violation_map,categories)

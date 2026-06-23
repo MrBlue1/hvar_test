@@ -1,24 +1,70 @@
-# Python虚拟环境（你目录里这几个全部屏蔽，不上传）
-ast_venv/
-Scripts/
-Lib/
-Include/
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
+# ==================== 虚拟环境 venv 核心 ====================
+# 通用虚拟环境文件夹名：venv / env / ast_venv / .venv
 venv/
 env/
+.venv/
+ast_venv/
+*/venv/
+*/env/
+*/.venv/
+# 虚拟环境配置临时文件
+pyvenv.cfg
 
-# 日志、缓存文件
+# ==================== Python 缓存文件 ====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ==================== Pytest / 测试缓存 ====================
+.pytest_cache/
+.coverage
+htmlcov/
+nosetests.xml
+coverage.xml
+*.junit.xml
+
+# ==================== 日志、运行输出 ====================
 *.log
+logs/
 *.out
-.cache/
-tmp/
+*.err
 
-# 系统文件
-.DS_Store
+# ==================== Jupyter Notebook ====================
+.ipynb_checkpoints/
+*.ipynb
+# 如果想保留笔记就删掉上面一行，只屏蔽缓存
+
+# ==================== 系统/IDE 文件 ====================
+# Windows
 Thumbs.db
-
-# 文档生成缓存
-docs/_build/
+.DS_Store
+# VSCode
+.vscode/
+*.swp
+*.swo
+# PyCharm
+.idea/
+*.iml
+*.iws
+*.prj
+# 临时文件
+*.tmp
+*.bak

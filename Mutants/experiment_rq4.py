@@ -449,7 +449,6 @@ def plot_rq4_fig1():
     plt.close()
     print("图1已保存")
 
-
 # ============================================================
 # 图2：存活组 vs 杀死组 质心对比
 # ============================================================
@@ -648,12 +647,10 @@ def plot_rq4_fig4():
     plt.close()
     print("图4已保存")
 
-
-# 执行
-if __name__ == '__main__':
-    # plot_rq4_fig1()
-    # plot_rq4_fig2()
-    # plot_rq4_fig3()
+def experiment_qr4_plot():
+    plot_rq4_fig1()
+    plot_rq4_fig2()
+    plot_rq4_fig3()
     plot_rq4_fig4()
 
 
