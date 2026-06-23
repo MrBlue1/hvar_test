@@ -19,6 +19,3 @@ All the running data will be shown in the terminal.
 
 
 
-
-
-
